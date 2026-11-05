@@ -936,7 +936,7 @@ export default function BossPage() {
                   />
                   <p className="text-xs text-muted-foreground">可多选</p>
                 </div>
-              
+
               {/* HR活跃过滤开关 */}
               <div className="space-y-2">
                 <Label htmlFor="filterDeadHr">HR活跃过滤</Label>
@@ -1039,7 +1039,7 @@ export default function BossPage() {
               <BiSearch className="text-primary" />
               黑名单管理 ({blacklist.length} 条)
             </CardTitle>
-            <CardDescription>添加或删除不想投递的公司、职位或HR</CardDescription>
+            <CardDescription>按公司、岗位名称或HR职位过滤，命中关键词即跳过，例如：猎头顾问</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-6">
@@ -1052,12 +1052,12 @@ export default function BossPage() {
                 >
                   <option value="company">公司</option>
                   <option value="job">岗位</option>
-                  <option value="recruiter">HR</option>
+                  <option value="recruiter">HR职位</option>
                 </Select>
                 <Input
                   value={newBlacklistKeyword}
                   onChange={(e) => setNewBlacklistKeyword(e.target.value)}
-                  placeholder={`输入${blacklistType === 'company' ? '公司名称' : blacklistType === 'job' ? '岗位关键词' : 'HR职位'}关键词`}
+                  placeholder={blacklistType === 'company' ? '输入公司名称关键词' : blacklistType === 'job' ? '输入岗位名称关键词' : '输入HR职位关键词，如：猎头顾问'}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       handleAddBlacklist()
@@ -1136,16 +1136,16 @@ export default function BossPage() {
                   </div>
                 </div>
 
-                {/* HR黑名单 */}
+                {/* HR职位黑名单 */}
                 <div>
                   <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
                     <BiSearch className="text-green-500" />
-                    <span>HR黑名单 ({blacklist.filter(item => item.type === 'recruiter').length})</span>
+                    <span>HR职位黑名单 ({blacklist.filter(item => item.type === 'recruiter').length})</span>
                   </h3>
                   <div className="space-y-2">
                     {blacklist.filter(item => item.type === 'recruiter').length === 0 ? (
                       <div className="text-center py-4 text-muted-foreground bg-muted/30 rounded-lg">
-                        <p className="text-xs">暂无HR黑名单</p>
+                        <p className="text-xs">暂无HR职位黑名单，可添加“猎头顾问”等关键词</p>
                       </div>
                     ) : (
                       blacklist.filter(item => item.type === 'recruiter').map((item) => (
@@ -1172,7 +1172,7 @@ export default function BossPage() {
           </CardContent>
         </Card>
 
-        
+
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-6 mt-6">

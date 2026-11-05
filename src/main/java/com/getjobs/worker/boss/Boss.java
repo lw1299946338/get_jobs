@@ -24,6 +24,9 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -98,7 +101,7 @@ public class Boss {
         this.blackRecruiters = bossService.getBlackRecruiters();
         this.blackJobs = bossService.getBlackJobs();
 
-        log.info("黑名单加载完成: 公司({}) 招聘者({}) 职位({})",
+        log.info("黑名单加载完成: 公司({}) HR职位({}) 岗位({})",
                 blackCompanies != null ? blackCompanies.size() : 0,
                 blackRecruiters != null ? blackRecruiters.size() : 0,
                 blackJobs != null ? blackJobs.size() : 0);
@@ -431,9 +434,9 @@ public class Boss {
                     log.info("被过滤：公司黑名单命中 | 公司：{} | 岗位：{} | 关键词：{}", bossCompany, jobName != null ? jobName : "", term != null ? term : "");
                     continue;
                 }
-                if (bossJobTitle != null && blackRecruiters != null && blackRecruiters.stream().anyMatch(bossJobTitle::contains)) {
-                    String term = findMatchedTerm(blackRecruiters, bossJobTitle);
-                    log.info("被过滤：招聘者黑名单命中 | 公司：{} | 岗位：{} | 招聘者：{} | 关键词：{}", bossCompany != null ? bossCompany : "", jobName != null ? jobName : "", bossJobTitle, term != null ? term : "");
+                String recruiterTerm = findMatchedTerm(blackRecruiters, bossJobTitle);
+                if (recruiterTerm != null) {
+                    log.info("被过滤：HR职位黑名单命中 | 公司：{} | 岗位：{} | HR职位：{} | 关键词：{}", bossCompany != null ? bossCompany : "", jobName != null ? jobName : "", bossJobTitle, recruiterTerm);
                     continue;
                 }
 
@@ -546,7 +549,7 @@ public class Boss {
             try {
                 if (blackCompanies != null && blackCompanies.stream().anyMatch(companyName::contains)) filtered = true;
                 if (!filtered && blackJobs != null && blackJobs.stream().anyMatch(positionName::contains)) filtered = true;
-                if (!filtered && blackRecruiters != null && blackRecruiters.stream().anyMatch(hrPosition::contains)) filtered = true;
+                if (!filtered && findMatchedTerm(blackRecruiters, hrPosition) != null) filtered = true;
             } catch (Throwable ignore) {}
 
             // HR活跃状态过滤：开启过滤且活跃描述包含“年”，则标记为已过滤，但仍入库
@@ -638,13 +641,13 @@ public class Boss {
         return new String[]{company, job};
     }
 
-    // 匹配命中词条（用于日志输出过滤原因）
-    private String findMatchedTerm(java.util.Collection<String> patterns, String text) {
-        if (patterns == null || text == null) return null;
+    // 匹配命中词条（用于黑名单过滤和日志输出过滤原因）
+    static String findMatchedTerm(java.util.Collection<String> patterns, String text) {
+        if (patterns == null || text == null || text.isBlank()) return null;
         try {
             for (String p : patterns) {
-                if (p != null && !p.isEmpty() && text.contains(p)) {
-                    return p;
+                if (p != null && !p.isBlank() && text.contains(p.trim())) {
+                    return p.trim();
                 }
             }
         } catch (Exception ignore) {
@@ -1699,13 +1702,15 @@ public class Boss {
      * 一段"提示词模板"教程，所以必须当作未配置处理。
      */
     private static final String AI_PROMPT_PLACEHOLDER = "请在此填写AI提示词模板";
+    private static final Path RESUME_PATH = Paths.get(System.getProperty("user.dir"), "resume.md");
 
     private AiMessageDecision generateAiMessage(String keyword, String jobName, String jd) {
         AiEntity aiConfig = aiService.getAiConfig();
         String introduce = (aiConfig != null && aiConfig.getIntroduce() != null) ? aiConfig.getIntroduce() : "";
+        String personalProfile = loadPersonalProfile(introduce);
         String prompt = (aiConfig != null) ? aiConfig.getPrompt() : null;
 
-        String requestMessage = buildAiRequestMessage(prompt, introduce, keyword, jobName, jd);
+        String requestMessage = buildAiRequestMessage(prompt, personalProfile, keyword, jobName, jd);
 
         try {
             String result = aiService.sendRequest(requestMessage);
@@ -1723,21 +1728,43 @@ public class Boss {
     }
 
     /**
+     * 优先使用项目根目录的 Markdown 简历；不存在或为空时沿用管理页的技能介绍。
+     * 每次生成前重新读取，修改简历后无需重启。
+     */
+    private String loadPersonalProfile(String introduce) {
+        if (!Files.isRegularFile(RESUME_PATH)) {
+            return introduce;
+        }
+        try {
+            String resume = Files.readString(RESUME_PATH, StandardCharsets.UTF_8);
+            if (resume.isBlank()) {
+                log.warn("{} 内容为空，改用管理页的技能介绍", RESUME_PATH);
+                return introduce;
+            }
+            log.debug("AI打招呼已加载 Markdown 简历: {}", RESUME_PATH);
+            return resume;
+        } catch (Exception e) {
+            log.warn("读取 Markdown 简历失败，改用管理页的技能介绍: {}", e.getMessage());
+            return introduce;
+        }
+    }
+
+    /**
      * 组装发给 AI 的提示词。自定义提示词按 %s 依次填入
-     * 个人介绍、关键词、职位名称、职位描述、参考招呼语；
+     * 个人简历（resume.md 优先）、关键词、职位名称、职位描述、参考招呼语；
      * 未填写、仍是占位符、或占位符写错（format 抛异常）时退回内置提示词，
      * 保证至少能生成一条和岗位相关的打招呼语。
      */
-    private String buildAiRequestMessage(String prompt, String introduce, String keyword,
+    private String buildAiRequestMessage(String prompt, String personalProfile, String keyword,
                                          String jobName, String jd) {
         if (prompt == null || prompt.isBlank() || AI_PROMPT_PLACEHOLDER.equals(prompt.trim())) {
-            return buildDefaultPrompt(introduce, keyword, jobName, jd);
+            return buildDefaultPrompt(personalProfile, keyword, jobName, jd);
         }
         try {
-            return String.format(prompt, introduce, keyword, jobName, jd, config.getSayHi());
+            return String.format(prompt, personalProfile, keyword, jobName, jd, config.getSayHi());
         } catch (IllegalFormatException e) {
             log.warn("AI提示词格式化失败（%s 占位符数量或转义有误），改用内置提示词: {}", e.getMessage());
-            return buildDefaultPrompt(introduce, keyword, jobName, jd);
+            return buildDefaultPrompt(personalProfile, keyword, jobName, jd);
         }
     }
 
@@ -1750,9 +1777,9 @@ public class Boss {
                 && result.trim().matches("(?i)^[*`'\"\\s]*false[*`'\"。.!！\\s]*$");
     }
 
-    private String buildDefaultPrompt(String introduce, String keyword, String jobName, String jd) {
+    private String buildDefaultPrompt(String personalProfile, String keyword, String jobName, String jd) {
         return "请基于以下信息生成简洁友好的中文打招呼语，不超过60字：\n" +
-                "个人介绍：" + introduce + "\n" +
+                "个人简历：" + personalProfile + "\n" +
                 "关键词：" + keyword + "\n" +
                 "职位名称：" + jobName + "\n" +
                 "职位描述：" + jd + "\n" +
