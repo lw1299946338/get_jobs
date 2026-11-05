@@ -17,6 +17,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -422,7 +423,8 @@ public class PlaywrightManager {
                 env.put("PLAYWRIGHT_NODEJS_PATH", nodePath);
                 log.info("使用本机 node: {}", nodePath);
             } else {
-                log.warn("PATH 里没找到 node，patchright driver 可能起不来，请先安装 Node.js");
+                log.warn("没找到 Node >= {} 的可执行文件，patchright driver 起不来，请先安装新版 Node.js",
+                        MIN_PATCHRIGHT_NODE_MAJOR);
             }
         }
 
@@ -450,30 +452,97 @@ public class PlaywrightManager {
         return null;
     }
 
+    // patchright 1.62 的 driver 要求 Node >= 20；官方 driver 自带的 node 不走这里
+    private static final int MIN_PATCHRIGHT_NODE_MAJOR = 20;
+
     /**
-     * 从 PATH 里找 node 可执行文件。
+     * 找一台能跑 patchright 的 node（>= 20）。
+     * <p>
+     * 不能只拿 PATH 里第一个 node：本机 /usr/local/bin/node 可能还是 v14，
+     * patchright 的 driver 在 v14 上会因 ??= 这类语法直接退出；而 nvm 装的
+     * 新版本又常常不在 IDEA 从 Dock 启动时继承的 PATH 里。所以先按版本过滤，
+     * 再补扫 nvm 目录兜底。
      */
     private String locateNodeExecutable() {
         boolean windows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("windows");
         String exe = windows ? "node.exe" : "node";
+
+        List<String> candidates = new ArrayList<>();
         String path = System.getenv("PATH");
-        if (path == null) {
-            return null;
-        }
-        for (String entry : path.split(java.io.File.pathSeparator)) {
-            if (entry == null || entry.isBlank()) {
-                continue;
-            }
-            try {
-                Path candidate = Paths.get(entry.trim()).resolve(exe);
-                if (Files.isRegularFile(candidate)) {
-                    return candidate.toAbsolutePath().toString();
+        if (path != null) {
+            for (String entry : path.split(java.io.File.pathSeparator)) {
+                if (entry == null || entry.isBlank()) {
+                    continue;
                 }
-            } catch (Exception ignore) {
-                // PATH 里可能有非法路径，跳过
+                try {
+                    Path candidate = Paths.get(entry.trim()).resolve(exe);
+                    if (Files.isRegularFile(candidate)) {
+                        candidates.add(candidate.toAbsolutePath().toString());
+                    }
+                } catch (Exception ignore) {
+                    // PATH 里可能有非法路径，跳过
+                }
             }
+        }
+        addFallbackNodeCandidates(candidates, exe, windows);
+
+        for (String candidate : candidates) {
+            if (nodeMajorVersion(candidate) >= MIN_PATCHRIGHT_NODE_MAJOR) {
+                return candidate;
+            }
+        }
+        if (!candidates.isEmpty()) {
+            log.warn("找到的 node 都低于 v{}（{}），patchright driver 无法启动。"
+                            + "请安装新版 Node 后重试，例如: nvm install 24",
+                    MIN_PATCHRIGHT_NODE_MAJOR, String.join(", ", candidates));
         }
         return null;
+    }
+
+    /**
+     * PATH 之外的 node 常见位置：nvm、Homebrew。IDEA 从 Dock 启动时 PATH 很短，
+     * 只靠 PATH 会漏掉用户自己用 nvm 装的 node。
+     */
+    private void addFallbackNodeCandidates(List<String> candidates, String exe, boolean windows) {
+        String home = System.getProperty("user.home");
+        if (home != null) {
+            File[] nvmVersions = new File(home, ".nvm/versions/node").listFiles(File::isDirectory);
+            if (nvmVersions != null) {
+                for (File versionDir : nvmVersions) {
+                    File node = windows ? new File(versionDir, exe) : new File(versionDir, "bin/" + exe);
+                    if (node.isFile()) {
+                        candidates.add(node.getAbsolutePath());
+                    }
+                }
+            }
+        }
+        if (!windows) {
+            candidates.add("/opt/homebrew/bin/" + exe);
+            candidates.add("/usr/local/bin/" + exe);
+        }
+    }
+
+    /**
+     * 执行 node --version 取主版本号；执行失败或超时返回 -1。
+     */
+    private int nodeMajorVersion(String nodePath) {
+        try {
+            Process process = new ProcessBuilder(nodePath, "--version")
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(process.getInputStream().readAllBytes()).trim();
+            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return -1;
+            }
+            if (process.exitValue() != 0) {
+                return -1;
+            }
+            String version = output.startsWith("v") ? output.substring(1) : output;
+            return Integer.parseInt(version.split("\\.")[0]);
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     /**

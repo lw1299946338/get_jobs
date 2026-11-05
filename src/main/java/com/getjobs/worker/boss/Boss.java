@@ -1694,14 +1694,18 @@ public class Boss {
     /** AI 生成结果：skipCurrentJob=true 表示只跳过当前岗位，不影响同企业的其他岗位。 */
     private record AiMessageDecision(boolean skipCurrentJob, String message) {}
 
+    /**
+     * 创建 AI 配置时写入的占位符。它不是有效提示词：原样发给模型只会得到
+     * 一段"提示词模板"教程，所以必须当作未配置处理。
+     */
+    private static final String AI_PROMPT_PLACEHOLDER = "请在此填写AI提示词模板";
+
     private AiMessageDecision generateAiMessage(String keyword, String jobName, String jd) {
         AiEntity aiConfig = aiService.getAiConfig();
         String introduce = (aiConfig != null && aiConfig.getIntroduce() != null) ? aiConfig.getIntroduce() : "";
         String prompt = (aiConfig != null) ? aiConfig.getPrompt() : null;
 
-        String requestMessage = (prompt != null)
-                ? String.format(prompt, introduce, keyword, jobName, jd, config.getSayHi())
-                : buildDefaultPrompt(introduce, keyword, jobName, jd);
+        String requestMessage = buildAiRequestMessage(prompt, introduce, keyword, jobName, jd);
 
         try {
             String result = aiService.sendRequest(requestMessage);
@@ -1715,6 +1719,25 @@ public class Boss {
         } catch (Exception e) {
             log.warn("AI请求失败，使用原有打招呼语: {}", e.getMessage());
             return new AiMessageDecision(false, config.getSayHi());
+        }
+    }
+
+    /**
+     * 组装发给 AI 的提示词。自定义提示词按 %s 依次填入
+     * 个人介绍、关键词、职位名称、职位描述、参考招呼语；
+     * 未填写、仍是占位符、或占位符写错（format 抛异常）时退回内置提示词，
+     * 保证至少能生成一条和岗位相关的打招呼语。
+     */
+    private String buildAiRequestMessage(String prompt, String introduce, String keyword,
+                                         String jobName, String jd) {
+        if (prompt == null || prompt.isBlank() || AI_PROMPT_PLACEHOLDER.equals(prompt.trim())) {
+            return buildDefaultPrompt(introduce, keyword, jobName, jd);
+        }
+        try {
+            return String.format(prompt, introduce, keyword, jobName, jd, config.getSayHi());
+        } catch (IllegalFormatException e) {
+            log.warn("AI提示词格式化失败（%s 占位符数量或转义有误），改用内置提示词: {}", e.getMessage());
+            return buildDefaultPrompt(introduce, keyword, jobName, jd);
         }
     }
 

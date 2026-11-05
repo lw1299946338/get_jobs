@@ -19,7 +19,7 @@ java {
 repositories {
     mavenCentral()
     // 国内镜像可选：
-    // maven { url = uri("https://maven.aliyun.com/repository/public") }
+     maven { url = uri("https://maven.aliyun.com/repository/public") }
 }
 
 dependencies {
@@ -145,8 +145,48 @@ fun findOnPath(name: String): File? {
     return null
 }
 
-/** 本机 node 可执行文件路径，交给 Driver 用（PLAYWRIGHT_NODEJS_PATH） */
-fun resolveNodePath(): String? = findOnPath("node")?.absolutePath
+/** 本机 node 可执行文件路径，交给 Driver 用（PLAYWRIGHT_NODEJS_PATH）。
+ *
+ * 必须是 Node >= 20：patchright 1.62 的 driver 在 v14 上会直接语法错误退出，
+ * Next.js 16 也要求 >= 20.9。PATH 里第一个 node 可能是旧版本，所以按版本过滤，
+ * 并补扫 nvm / Homebrew（IDEA 从 Dock 启动时 PATH 往往不包含 nvm）。
+ */
+fun nodeMajorVersion(node: File): Int = try {
+    val process = ProcessBuilder(node.absolutePath, "--version").redirectErrorStream(true).start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    process.waitFor()
+    output.removePrefix("v").substringBefore(".").toIntOrNull() ?: -1
+} catch (e: Exception) {
+    -1
+}
+
+fun findNodeCandidates(): List<File> {
+    val names = if (isWindowsOs) listOf("node.exe", "node.cmd", "node") else listOf("node")
+    val dirs = mutableListOf<String>()
+    System.getenv("PATH")?.split(File.pathSeparator)?.let(dirs::addAll)
+    System.getProperty("user.home")?.let { home ->
+        File(home, ".nvm/versions/node").listFiles { f -> f.isDirectory }?.forEach { versionDir ->
+            dirs.add(if (isWindowsOs) versionDir.absolutePath else File(versionDir, "bin").absolutePath)
+        }
+    }
+    if (!isWindowsOs) {
+        dirs.add("/opt/homebrew/bin")
+        dirs.add("/usr/local/bin")
+    }
+    return dirs.filter { it.isNotBlank() }
+        .flatMap { dir -> names.map { File(dir.trim(), it) } }
+        .filter { it.isFile }
+}
+
+fun resolveNodePath(): String? {
+    val candidates = findNodeCandidates()
+    val suitable = candidates.firstOrNull { nodeMajorVersion(it) >= 20 }
+    if (suitable == null && candidates.isNotEmpty()) {
+        logger.warn("找到的 node 都低于 v20：{}；Next.js 16 和 patchright 都需要 Node >= 20",
+                candidates.joinToString { it.absolutePath })
+    }
+    return suitable?.absolutePath
+}
 
 // ---------------------------------------------------------------------------
 // 前端（管理页面）构建
@@ -183,12 +223,13 @@ val buildFrontend = tasks.register("buildFrontend") {
     }
 
     doLast {
-        val node = findOnPath("node")
-        if (node == null) {
-            logger.warn("PATH 里没找到 node，跳过前端构建；管理页面将不可用。" +
-                    "装好 Node.js 后执行: gradlew buildFrontend -PrebuildFrontend")
+        val nodePath = resolveNodePath()
+        if (nodePath == null) {
+            logger.warn("没找到 Node >= 20，跳过前端构建；管理页面将不可用。" +
+                    "装好新版 Node.js 后执行: gradlew buildFrontend -PrebuildFrontend")
             return@doLast
         }
+        val node = File(nodePath)
 
         // 依赖没装（或只剩个空目录）时先补上
         if (!File(frontendDir, "node_modules/next").isDirectory) {
