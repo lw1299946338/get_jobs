@@ -73,6 +73,8 @@ interface ResumeImageInfo {
   previewUrl?: string
 }
 
+type BlacklistType = 'company' | 'job' | 'recruiter'
+
 export default function BossPage() {
   const [config, setConfig] = useState<BossConfig>({
     keywords: '',
@@ -108,8 +110,11 @@ export default function BossPage() {
     stage: [],
   })
   const [blacklist, setBlacklist] = useState<BlacklistItem[]>([])
-  const [newBlacklistKeyword, setNewBlacklistKeyword] = useState('')
-  const [blacklistType, setBlacklistType] = useState('company') // 默认为公司
+  const [newBlacklistKeywords, setNewBlacklistKeywords] = useState<Record<BlacklistType, string>>({
+    company: '',
+    job: '',
+    recruiter: '',
+  })
   const [loading, setLoading] = useState(true)
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isDelivering, setIsDelivering] = useState(false)
@@ -531,9 +536,9 @@ export default function BossPage() {
       : null
   )
 
-  const handleAddBlacklist = async () => {
-    if (!newBlacklistKeyword.trim()) {
-      // 输入为空：不弹框，直接返回
+  const handleAddBlacklist = async (type: BlacklistType) => {
+    const value = newBlacklistKeywords[type].trim()
+    if (!value) {
       return
     }
 
@@ -543,24 +548,38 @@ export default function BossPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          value: newBlacklistKeyword,
-          type: blacklistType, // 使用选中的类型
-        }),
+        body: JSON.stringify({ value, type }),
       })
 
       if (response.ok) {
-        setNewBlacklistKeyword('')
+        setNewBlacklistKeywords((prev) => ({ ...prev, [type]: '' }))
         fetchAllData()
       } else {
-        // 添加失败：不弹框
         console.warn('添加黑名单失败：后端返回非 2xx 状态')
       }
     } catch (error) {
       console.error('Failed to add blacklist:', error)
-      // 添加失败：不弹框
     }
   }
+
+  const renderBlacklistAdder = (type: BlacklistType, placeholder: string) => (
+    <div className="flex gap-2 mb-3">
+      <Input
+        value={newBlacklistKeywords[type]}
+        onChange={(e) => setNewBlacklistKeywords((prev) => ({ ...prev, [type]: e.target.value }))}
+        placeholder={placeholder}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            handleAddBlacklist(type)
+          }
+        }}
+      />
+      <Button onClick={() => handleAddBlacklist(type)} className="whitespace-nowrap">
+        <BiPlus />
+        添加
+      </Button>
+    </div>
+  )
 
   const handleDeleteBlacklist = async (id: number) => {
     try {
@@ -1043,33 +1062,6 @@ export default function BossPage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-6">
-              {/* 添加黑名单 */}
-              <div className="flex gap-2">
-                <Select
-                  value={blacklistType}
-                  onChange={(e) => setBlacklistType(e.target.value)}
-                  className="w-32"
-                >
-                  <option value="company">公司</option>
-                  <option value="job">岗位</option>
-                  <option value="recruiter">HR职位</option>
-                </Select>
-                <Input
-                  value={newBlacklistKeyword}
-                  onChange={(e) => setNewBlacklistKeyword(e.target.value)}
-                  placeholder={blacklistType === 'company' ? '输入公司名称关键词' : blacklistType === 'job' ? '输入岗位名称关键词' : '输入HR职位关键词，如：猎头顾问'}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleAddBlacklist()
-                    }
-                  }}
-                />
-                <Button onClick={handleAddBlacklist} className="whitespace-nowrap">
-                  <BiPlus />
-                  添加
-                </Button>
-              </div>
-
               {/* 黑名单列表 - 按类型分组显示 */}
               <div className="space-y-6">
                 {/* 公司黑名单 */}
@@ -1078,6 +1070,7 @@ export default function BossPage() {
                     <BiBuilding className="text-orange-500" />
                     <span>公司黑名单 ({blacklist.filter(item => item.type === 'company').length})</span>
                   </h3>
+                  {renderBlacklistAdder('company', '输入公司名称关键词')}
                   <div className="space-y-2">
                     {blacklist.filter(item => item.type === 'company').length === 0 ? (
                       <div className="text-center py-4 text-muted-foreground bg-muted/30 rounded-lg">
@@ -1110,6 +1103,7 @@ export default function BossPage() {
                     <BiBriefcase className="text-blue-500" />
                     <span>岗位黑名单 ({blacklist.filter(item => item.type === 'job').length})</span>
                   </h3>
+                  {renderBlacklistAdder('job', '输入岗位名称关键词')}
                   <div className="space-y-2">
                     {blacklist.filter(item => item.type === 'job').length === 0 ? (
                       <div className="text-center py-4 text-muted-foreground bg-muted/30 rounded-lg">
@@ -1142,6 +1136,7 @@ export default function BossPage() {
                     <BiSearch className="text-green-500" />
                     <span>HR职位黑名单 ({blacklist.filter(item => item.type === 'recruiter').length})</span>
                   </h3>
+                  {renderBlacklistAdder('recruiter', '输入HR职位关键词，如：猎头顾问')}
                   <div className="space-y-2">
                     {blacklist.filter(item => item.type === 'recruiter').length === 0 ? (
                       <div className="text-center py-4 text-muted-foreground bg-muted/30 rounded-lg">
